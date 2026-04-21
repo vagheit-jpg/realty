@@ -389,28 +389,52 @@ def chart_disparity(mdf, title):
 
 
 def chart_overlay(sale_m, js_m):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=sale_m["날짜"], y=sale_m["중위가"]/10_000,
-        name="매매가(억)", mode="lines", line=dict(color="#1A5CB8", width=2)))
-    fig.add_trace(go.Scatter(x=js_m["날짜"], y=js_m["중위가"]/10_000,
-        name="전세가(억)", mode="lines", line=dict(color="#E67E22", width=2)))
-    merged = pd.merge(sale_m[["날짜","중위가"]].rename(columns={"중위가":"sale"}),
-                      js_m[["날짜","중위가"]].rename(columns={"중위가":"js"}),
-                      on="날짜", how="inner")
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(go.Scatter(
+        x=sale_m["날짜"], y=sale_m["중위가"] / 10_000,
+        name="매매가(억)", mode="lines",
+        line=dict(color="#1A5CB8", width=2)),
+        secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=js_m["날짜"], y=js_m["중위가"] / 10_000,
+        name="전세가(억)", mode="lines",
+        line=dict(color="#E67E22", width=2)),
+        secondary_y=False)
+
+    merged = pd.merge(
+        sale_m[["날짜", "중위가"]].rename(columns={"중위가": "sale"}),
+        js_m[["날짜",  "중위가"]].rename(columns={"중위가": "js"}),
+        on="날짜", how="inner"
+    )
     if not merged.empty:
-        merged["전세가율"] = (merged["js"]/merged["sale"]*100).round(1)
-        fig.add_trace(go.Scatter(x=merged["날짜"], y=merged["전세가율"],
+        merged["전세가율"] = (merged["js"] / merged["sale"] * 100).round(1)
+        fig.add_trace(go.Scatter(
+            x=merged["날짜"], y=merged["전세가율"],
             name="전세가율(%)", mode="lines",
-            line=dict(color="#9B59B6", width=1.5, dash="dot"), yaxis="y2"))
-        fig.add_hline(y=80, line=dict(color="#E74C3C", width=1, dash="dot"),
+            line=dict(color="#9B59B6", width=1.5, dash="dot")),
+            secondary_y=True)
+        fig.add_hline(y=80, secondary_y=True,
+            line=dict(color="#E74C3C", width=1, dash="dot"),
             annotation_text="  갭투자 위험(80%)",
-            annotation_font=dict(color="#E74C3C", size=9), yref="y2")
-    fig.update_layout(**CHART_LAYOUT,
+            annotation_font=dict(color="#E74C3C", size=9))
+
+    fig.update_layout(
+        paper_bgcolor="#FFFFFF", plot_bgcolor="#FAFBFD",
+        font=dict(family="Share Tech Mono, monospace", color="#5A6A8A", size=11),
+        margin=dict(l=20, r=20, t=44, b=20),
+        legend=dict(bgcolor="rgba(255,255,255,0.9)", bordercolor="#DDE3EE", borderwidth=1),
         title=dict(text="📊 매매 vs 전세 & 전세가율", font=dict(color="#1A2035", size=13)),
-        yaxis=dict(title="금액(억)", gridcolor="#E8EDF5"),
-        yaxis2=dict(title="전세가율(%)", overlaying="y", side="right",
-                    gridcolor="rgba(0,0,0,0)", showgrid=False),
-        height=360)
+        height=360,
+    )
+    fig.update_xaxes(gridcolor="#E8EDF5", zerolinecolor="#DDE3EE", linecolor="#DDE3EE")
+    fig.update_yaxes(title_text="금액(억)", gridcolor="#E8EDF5",
+                     zerolinecolor="#DDE3EE", secondary_y=False)
+    fig.update_yaxes(title_text="전세가율(%)", gridcolor="rgba(0,0,0,0)",
+                     showgrid=False, secondary_y=True)
     return fig
 
 
