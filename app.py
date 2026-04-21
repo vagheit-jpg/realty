@@ -82,9 +82,9 @@ LAWD_MAP = {
     "직접 입력":"CUSTOM",
 }
 
-API_BASE = "http://openapi.molit.go.kr/OpenAPI_ToolInstallPackage/service/rest/RTMSOBJSvc"
-EP_SALE  = f"{API_BASE}/getRTMSDataSvcAptTrade"
-EP_RENT  = f"{API_BASE}/getRTMSDataSvcAptRent"
+# 공공데이터포털 신버전 URL (2023년 이후 유효)
+EP_SALE = "http://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
+EP_RENT = "http://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent"
 
 CHART_LAYOUT = dict(
     paper_bgcolor="#FFFFFF", plot_bgcolor="#FAFBFD",
@@ -101,53 +101,142 @@ CHART_LAYOUT = dict(
 # ══════════════════════════════════════════════════════════════
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_month(service_key, endpoint, lawd_cd, ym):
-    params = {"serviceKey": service_key, "LAWD_CD": lawd_cd,
-              "DEAL_YMD": ym, "numOfRows": 1000, "pageNo": 1}
+    """
+    공공데이터포털 신버전 API 호출
+    - 매매: dealAmount / 임대차: deposit + monthlyRent
+    - 응답이 JSON 또는 XML 모두 처리
+    """
+    params = {
+        "serviceKey": service_key,
+        "LAWD_CD":    lawd_cd,
+        "DEAL_YMD":   ym,
+        "numOfRows":  1000,
+        "pageNo":     1,
+    }
     try:
-        resp = requests.get(endpoint, params=params, timeout=12)
-        root = ET.fromstring(resp.content)
-        if root.findtext(".//resultCode", "") not in ("00","0000",""):
+        resp = requests.get(endpoint, params=params, timeout=15)
+
+        # ── XML 파싱
+        try:
+            root = ET.fromstring(resp.content)
+        except ET.ParseError:
             return []
+
+        # 오류 코드 확인
+        result_code = root.findtext(".//resultCode", "")
+        if result_code and result_code not in ("00", "0000", "000", ""):
+            return []
+
+        items = root.findall(".//item")
+        if not items:
+            return []
+
         records = []
-        for item in root.findall(".//item"):
+        for item in items:
             try:
-                deal_raw    = (item.findtext("dealAmount")   or "0").replace(",","").strip()
-                deposit_raw = (item.findtext("deposit")      or "0").replace(",","").strip()
-                rent_raw    = (item.findtext("monthlyRent")  or "0").replace(",","").strip()
+                # 매매금액 (쉼표 제거)
+                def clean(tag, default="0"):
+                    v = item.findtext(tag) or default
+                    return v.replace(",", "").strip()
+
+                # 단지명: aptNm (신버전 동일)
+                apt_nm = (item.findtext("aptNm") or "").strip()
+
+                # 전용면적: excluUseAr
+                area_raw = clean("excluUseAr", "0")
+                try:
+                    area = float(area_raw)
+                except ValueError:
+                    area = 0.0
+
+                # 날짜
+                year_  = int(item.findtext("dealYear")  or 0)
+                month_ = int(item.findtext("dealMonth") or 0)
+                # 일: dealDay (없으면 1)
+                day_raw = (item.findtext("dealDay") or "1").strip()
+                try:
+                    day_ = int(day_raw)
+                except ValueError:
+                    day_ = 1
+
+                # 매매금액
+                deal_raw = clean("dealAmount")
+                deal = int(deal_raw) if deal_raw and deal_raw != "0" else 0
+
+                # 임대차: deposit(보증금), monthlyRent(월세)
+                deposit_raw = clean("deposit")
+                rent_raw    = clean("monthlyRent")
+                deposit = int(deposit_raw) if deposit_raw and deposit_raw != "0" else 0
+                rent    = int(rent_raw)    if rent_raw    and rent_raw    != "0" else 0
+
+                build_yr = int(item.findtext("buildYear") or 0)
+                floor_   = int((item.findtext("floor") or "0").strip() or 0)
+
+                if year_ == 0 or month_ == 0:
+                    continue
+
                 records.append({
-                    "단지명":   (item.findtext("aptNm") or "").strip(),
-                    "전용면적": float(item.findtext("excluUseAr") or 0),
-                    "거래금액": int(deal_raw)    if deal_raw    else 0,
-                    "보증금":   int(deposit_raw) if deposit_raw else 0,
-                    "월세":     int(rent_raw)    if rent_raw    else 0,
-                    "년": int(item.findtext("dealYear")  or 0),
-                    "월": int(item.findtext("dealMonth") or 0),
-                    "일": int(item.findtext("dealDay")   or 1),
-                    "건축년도": int(item.findtext("buildYear") or 0),
+                    "단지명":   apt_nm,
+                    "전용면적": area,
+                    "거래금액": deal,
+                    "보증금":   deposit,
+                    "월세":     rent,
+                    "년":       year_,
+                    "월":       month_,
+                    "일":       day_,
+                    "건축년도": build_yr,
+                    "층":       floor_,
                 })
             except Exception:
                 continue
+
         return records
+
+    except requests.exceptions.Timeout:
+        return []
     except Exception:
         return []
 
 
 def load_api(service_key, lawd_cd, endpoint, months):
     all_rec = []
-    now = datetime.now()
-    prog = st.progress(0, text="수집 중...")
+    now     = datetime.now()
+    prog    = st.progress(0, text="수집 중...")
+    failed  = []
+
     for i in range(months):
-        ym = (now - timedelta(days=30*i)).strftime("%Y%m")
-        all_rec.extend(fetch_month(service_key, endpoint, lawd_cd, ym))
-        prog.progress((i+1)/months, text=f"수집 중... {ym}")
+        ym  = (now - timedelta(days=30 * i)).strftime("%Y%m")
+        rec = fetch_month(service_key, endpoint, lawd_cd, ym)
+        if rec:
+            all_rec.extend(rec)
+        else:
+            failed.append(ym)
+        prog.progress((i + 1) / months, text=f"수집 중... {ym}  ({len(all_rec):,}건)")
+
     prog.empty()
+
     if not all_rec:
+        # 디버그 정보 표시
+        st.error(
+            f"❌ 데이터 수집 실패 — 확인 사항:\n"
+            f"1. API 키가 **Encoding 키**인지 확인 (Decoding 키 ❌)\n"
+            f"2. 공공데이터포털에서 해당 API 활용신청이 **승인** 상태인지 확인\n"
+            f"3. 법정동 코드 **{lawd_cd}** 가 올바른지 확인\n"
+            f"4. 수집 대상 월: {months}개월 중 {len(failed)}개월 응답 없음"
+        )
         return pd.DataFrame()
+
     df = pd.DataFrame(all_rec)
     df["날짜"] = pd.to_datetime(
-        df[["년","월","일"]].rename(columns={"년":"year","월":"month","일":"day"}),
-        errors="coerce")
-    return df.dropna(subset=["날짜"]).sort_values("날짜").reset_index(drop=True)
+        df[["년", "월", "일"]].rename(columns={"년": "year", "월": "month", "일": "day"}),
+        errors="coerce"
+    )
+    df = df.dropna(subset=["날짜"]).sort_values("날짜").reset_index(drop=True)
+
+    if failed:
+        st.caption(f"ℹ️ 거래 없는 월 {len(failed)}개월 제외 (정상) | 총 {len(df):,}건 수집 완료")
+
+    return df
 
 
 def load_csv(uploaded):
